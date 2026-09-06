@@ -34,3 +34,4 @@ export * from './skill/validate';
 export * from './mcp';
 export * from './agent-plugin/types';
 export * from './agent-plugin/validate';
+export * from './agent-plugin/validate-mcp';

@@ -103,8 +103,14 @@ import {
   InstructionCreateCommand,
 } from './commands/instruction-create';
 import {
+  PluginBuildCommand,
+} from './commands/plugin-build';
+import {
   PluginCreateCommand,
 } from './commands/plugin-create';
+import {
+  PluginValidateCommand,
+} from './commands/plugin-validate';
 import {
   PluginsListCommand,
 } from './commands/plugins-list';
@@ -231,6 +237,8 @@ async function main(): Promise<number> {
     AgentCreateCommand,
     SkillCreateCommand,
     PluginCreateCommand,
+    PluginValidateCommand,
+    PluginBuildCommand,
     HookCreateCommand,
     DoctorCommand,
     DoctorDiagnosticsCommand,
