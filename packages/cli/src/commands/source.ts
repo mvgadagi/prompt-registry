@@ -12,6 +12,7 @@ import {
 } from '@ai-primitives-hub/core';
 import type {
   HttpClient,
+  SourceType,
   TokenProvider,
 } from '@ai-primitives-hub/core';
 import {
@@ -60,7 +61,8 @@ export class SourceAddCommand extends BaseSourceCommand {
       Usage: ai-primitives-hub source add --url <ref> [--type <type>] [--id <id>] [--name <name>]
 
       Options:
-        --type <type>   Source type: github (default) or local.
+        --type <type>   Source type: github (default), local, agent-plugins, or
+                        local-agent-plugins.
         --url <ref>     GitHub owner/repo or local path.
         --id <id>       Source ID (defaults to generated ID).
         --name <name>   Display name (defaults to ID).
@@ -69,6 +71,8 @@ export class SourceAddCommand extends BaseSourceCommand {
       Examples:
         $ ai-primitives-hub source add --url amadeus/copilot-skills
         $ ai-primitives-hub source add --type local --url ./skills --id local-skills
+        $ ai-primitives-hub source add --type agent-plugins --url owner/repo
+        $ ai-primitives-hub source add --type local-agent-plugins --url ./plugins
     `
   });
 
@@ -91,7 +95,7 @@ export class SourceAddCommand extends BaseSourceCommand {
       return 1;
     }
 
-    const type = (this.sourceType ?? 'github') as 'github' | 'local';
+    const type = (this.sourceType ?? 'github') as SourceType;
     const id = this.sourceId ?? generateSourceId(type, this.url);
     const added = await mgr.addDetachedSource({
       id, name: this.name ?? id, type, url: this.url,
