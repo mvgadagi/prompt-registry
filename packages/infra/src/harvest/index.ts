@@ -2,6 +2,7 @@
  * Harvest subsystem barrel export.
  * @module harvest
  */
+export * from './agent-plugin-manifest';
 export * from './blob-cache';
 export * from './bundle-providers';
 export * from './default-paths';
