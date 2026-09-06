@@ -97,6 +97,53 @@ describe('readLockfile / writeLockfile', () => {
     expect(lock?.bundles['my-bundle'].sourceId).toBe('github-abc123');
     expect(lock?.bundles['my-bundle'].files[0].path).toBe('.github/prompts/test.md');
   });
+
+  it('FR-7.1: an agent-plugins bundle/source round-trips with no lockfile schema change', async () => {
+    const fs = new InMemoryFileSystem();
+    const path = getLockfilePathForMode('/repo', 'commit');
+    let lock = emptyLockfile('cli@1.0.0');
+    lock = upsertSource(lock, 'agent-plugins-abc123', {
+      type: 'agent-plugins',
+      url: 'https://github.com/owner/repo'
+    });
+    lock = upsertBundleEntry(lock, 'agent-plugins-owner-repo-my-plugin', {
+      version: 'hash:deadbeef',
+      sourceId: 'agent-plugins-abc123',
+      sourceType: 'agent-plugins',
+      installedAt: '2024-01-01T00:00:00.000Z',
+      files: [{ path: '.claude/skills/my-skill/SKILL.md', checksum: 'cafebabe' }]
+    });
+
+    await writeLockfile(path, lock, fs);
+    const result = await readLockfile(path, fs);
+
+    // Schema shape is byte-identical: the same top-level keys, the new
+    // sourceType is carried as a plain string exactly like 'github'.
+    expect(result).toEqual(lock);
+    expect(Object.keys(result ?? {}).toSorted()).toEqual(Object.keys(lock).toSorted());
+    expect(result?.bundles['agent-plugins-owner-repo-my-plugin'].sourceType).toBe('agent-plugins');
+    expect(result?.sources['agent-plugins-abc123'].type).toBe('agent-plugins');
+  });
+
+  it('FR-7.2: a pre-existing collection (github) lockfile still round-trips unchanged after the union grew', async () => {
+    const fs = new InMemoryFileSystem();
+    const path = getLockfilePathForMode('/repo', 'commit');
+    let lock = emptyLockfile('cli@1.0.0');
+    lock = upsertSource(lock, 'github-collection', { type: 'github', url: 'https://github.com/owner/repo' });
+    lock = upsertBundleEntry(lock, 'owner-repo-my-collection-v1.0.0', {
+      version: '1.0.0',
+      sourceId: 'github-collection',
+      sourceType: 'github',
+      installedAt: '2024-01-01T00:00:00.000Z',
+      files: [{ path: '.github/prompts/test.md', checksum: 'deadbeef' }]
+    });
+
+    await writeLockfile(path, lock, fs);
+    const result = await readLockfile(path, fs);
+
+    expect(result).toEqual(lock);
+    expect(result?.bundles['owner-repo-my-collection-v1.0.0'].sourceType).toBe('github');
+  });
 });
 
 describe('deleteLockfile', () => {

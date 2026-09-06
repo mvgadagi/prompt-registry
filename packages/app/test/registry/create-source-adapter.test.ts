@@ -11,6 +11,10 @@ import type {
   TokenProvider,
 } from '@ai-primitives-hub/core';
 import {
+  AgentPluginsSourceAdapter,
+  LocalAgentPluginsAdapter,
+} from '@ai-primitives-hub/infra';
+import {
   describe,
   expect,
   it,
@@ -119,13 +123,61 @@ describe('createSourceAdapter', () => {
     ['local-apm', '/registry'],
     ['local-awesome-copilot', '/registry'],
     ['local-skills', '/registry'],
+    ['local-agent-plugins', '/registry'],
     ['github', 'https://github.com/owner/repo'],
     ['skills', 'https://github.com/owner/repo'],
     ['awesome-copilot', 'https://github.com/owner/repo'],
-    ['apm', 'https://github.com/owner/repo']
+    ['apm', 'https://github.com/owner/repo'],
+    ['agent-plugins', 'https://github.com/owner/repo']
   ] as const)('builds a %s adapter with the matching .type', (type, url) => {
     const adapter = createSourceAdapter(makeSource({ type, url }), makeDeps());
     expect(adapter.type).toBe(type);
+  });
+
+  describe('Agent Plugins source types (FR-7.1 additive)', () => {
+    it('builds an AgentPluginsSourceAdapter for a remote agent-plugins source', () => {
+      const adapter = createSourceAdapter(
+        makeSource({ type: 'agent-plugins', url: 'https://github.com/owner/repo' }),
+        makeDeps()
+      );
+
+      expect(adapter).toBeInstanceOf(AgentPluginsSourceAdapter);
+      expect(adapter.type).toBe('agent-plugins');
+    });
+
+    it('builds a LocalAgentPluginsAdapter for a local-agent-plugins source', () => {
+      const adapter = createSourceAdapter(
+        makeSource({ type: 'local-agent-plugins', url: '/registry' }),
+        makeDeps()
+      );
+
+      expect(adapter).toBeInstanceOf(LocalAgentPluginsAdapter);
+      expect(adapter.type).toBe('local-agent-plugins');
+    });
+
+    it('mirrors the skills case: an explicit source token wins over the fallback chain for agent-plugins', async () => {
+      const httpClient = new RecordingHttpClient();
+      const adapter = createSourceAdapter(
+        makeSource({ type: 'agent-plugins', url: 'https://github.com/owner/repo', token: 'explicit-token' }),
+        makeDeps({ httpClient, fallbackTokenProviders: [new StubTokenProvider('fallback-token')] })
+      );
+
+      await adapter.validate();
+
+      expect(httpClient.requests.length).toBeGreaterThan(0);
+      for (const request of httpClient.requests) {
+        expect(request.headers?.Authorization).toBe('token explicit-token');
+      }
+    });
+
+    it('rejects an agent-plugins source whose URL is not a GitHub repository (same guard as the skills case)', () => {
+      // Mirrors the 'skills' case: buildGitHubApi -> parseGitHubRepositoryTarget
+      // validates the owner/repo URL before the adapter is constructed.
+      expect(() => createSourceAdapter(
+        makeSource({ type: 'agent-plugins', url: '/not-a-github-url' }),
+        makeDeps()
+      )).toThrow('GitHub repository reference must contain exactly owner/repository.');
+    });
   });
 
   it('throws a descriptive error for an unknown source type', () => {
