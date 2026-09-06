@@ -38,6 +38,20 @@ export { default as DEPLOYMENT_MANIFEST_SCHEMA } from './public/schemas/deployme
 export { default as HUB_CONFIG_SCHEMA } from './public/schemas/hub-config.schema.json';
 
 /**
+ * Pinned Agent Plugins v1.0.0 `plugin.json` schema (closed manifest).
+ * DERIVED copy — see the schema file header and the U1 code-summary open
+ * item until the canonical upstream schema is vendored.
+ */
+export { default as AGENT_PLUGIN_SCHEMA } from './public/schemas/agent-plugin.schema.json';
+
+/**
+ * Pinned Agent Plugins v1.0.0 root `mcp.json` schema. The caller (U2)
+ * validates a standalone `mcp.json` against this; `validateAgentPluginManifest`
+ * validates the `plugin.json` object only.
+ */
+export { default as AGENT_PLUGIN_MCP_SCHEMA } from './public/schemas/agent-plugin-mcp.schema.json';
+
+/**
  * Phase 1 scaffolding marker, kept until `infra`/`app`/`cli` each have real
  * code of their own to depend on instead of this placeholder re-export
  * chain (see those packages' `src/index.ts`) — removed in Phase 5 once

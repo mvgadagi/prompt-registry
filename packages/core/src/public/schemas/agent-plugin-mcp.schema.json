@@ -1,0 +1,62 @@
+{
+  "title": "Agent Plugins v1.0.0 - mcp.json",
+  "description": "DERIVED closed schema for an Agent Plugins v1.0.0 root mcp.json. Faithful hand-authored approximation of the documented v1 MCP configuration - NOT the canonical pinned copy from the Agent Plugins spec. Compiled as JSON Schema draft 2020-12 (Ajv2020 default meta). Replace with the upstream pinned schema when it can be fetched (see code-summary.md open item). MCP validation is performed by the caller (U2) against this schema, not by validateAgentPluginManifest.",
+  "type": "object",
+  "properties": {
+    "mcpServers": {
+      "type": "object",
+      "description": "Map of server name to MCP server configuration.",
+      "patternProperties": {
+        "^[a-zA-Z0-9_-]+$": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": ["stdio", "http", "sse"]
+            },
+            "command": { "type": "string" },
+            "args": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "env": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            },
+            "url": { "type": "string" },
+            "headers": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "inputs": {
+      "type": "array",
+      "description": "Input declarations for MCP server secrets or configurable values.",
+      "items": {
+        "type": "object",
+        "required": ["id", "type"],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9_-]+$"
+          },
+          "type": { "type": "string" },
+          "description": { "type": "string" },
+          "password": { "type": "boolean" },
+          "default": { "type": "string" },
+          "options": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
