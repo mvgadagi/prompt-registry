@@ -1,6 +1,7 @@
-import type {
-  Bundle,
-  RegistrySource,
+import {
+  AGENT_PLUGINS_EXTENSION_NS,
+  type Bundle,
+  type RegistrySource,
 } from '@ai-primitives-hub/core';
 import AdmZip from 'adm-zip';
 import fc from 'fast-check';
@@ -198,6 +199,105 @@ describe('AgentPluginsSourceAdapter', () => {
         }),
         { numRuns: 40 }
       );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // U7 — reverse-domain namespace (agents/hooks) synthesis
+  // -------------------------------------------------------------------------
+  describe('namespace agents/hooks synthesis (U7)', () => {
+    const AGENTS_DIR = `${AGENT_PLUGINS_EXTENSION_NS}/agents`;
+    const HOOKS_DIR = `${AGENT_PLUGINS_EXTENSION_NS}/hooks`;
+
+    /** A golden plugin that ALSO carries a reverse-domain agent + hook. */
+    const namespaceApi = (): FakeGitHubApi =>
+      new FakeGitHubApi()
+        .seedText(`${RAW_BASE}/plugin.json`, JSON.stringify({ name: 'demo-plugin', $schema: VALID_SCHEMA, description: 'A demo', license: 'MIT' }))
+        .seedJson(TREE_PATH, {
+          tree: [
+            { path: 'skills/alpha/SKILL.md', type: 'blob', sha: 's1' },
+            { path: `${AGENTS_DIR}/reviewer.md`, type: 'blob', sha: 's2' },
+            { path: `${HOOKS_DIR}/hooks.json`, type: 'blob', sha: 's3' }
+          ]
+        })
+        .seedText(`${RAW_BASE}/skills/alpha/SKILL.md`, skillMd({ name: 'Alpha', description: 'Alpha skill' }))
+        // hooks.json is JSON → fetched during discovery for the resilient parse check.
+        .seedText(`${RAW_BASE}/${HOOKS_DIR}/hooks.json`, JSON.stringify({ hooks: [{ event: 'PostToolUse' }] }))
+        // Archive fetches each namespace file's bytes via its raw URL.
+        .seedBytes(`${RAW_BASE}/${AGENTS_DIR}/reviewer.md`, new TextEncoder().encode('# Reviewer agent'))
+        .seedBytes(`${RAW_BASE}/${HOOKS_DIR}/hooks.json`, new TextEncoder().encode('{"hooks":[]}'))
+        // Skill files for the archive step.
+        .seedJson('/repos/owner/repo/contents/skills/alpha', [
+          { name: 'SKILL.md', path: 'skills/alpha/SKILL.md', type: 'file', download_url: `${RAW_BASE}/skills/alpha/SKILL.md` }
+        ])
+        .seedBytes(`${RAW_BASE}/skills/alpha/SKILL.md`, new TextEncoder().encode('skill'));
+
+    it('parses + validates + maps agents/hooks and synthesizes them into the manifest and the ZIP', async () => {
+      const adapter = makeAdapter({ githubApi: namespaceApi() });
+      const [bundle] = await adapter.fetchBundles();
+      const zip = await adapter.downloadBundle(bundle);
+
+      // The namespace files are baked into the bundle alongside the skill.
+      const entries = new AdmZip(zip).getEntries().map((entry) => entry.entryName);
+      expect(entries).toContain(`${AGENTS_DIR}/reviewer.md`);
+      expect(entries).toContain(`${HOOKS_DIR}/hooks.json`);
+      expect(entries).toContain('skills/alpha/SKILL.md');
+
+      const manifest = yaml.load(new AdmZip(zip).getEntry('deployment-manifest.yml')!.getData().toString('utf8')) as Record<string, unknown>;
+      const prompts = manifest.prompts as { file: string; type: string }[];
+      // Existing skill route is preserved (additive), plus agent + hook routes mapped to existing kinds.
+      expect(prompts).toContainEqual(expect.objectContaining({ file: 'skills/alpha/SKILL.md', type: 'skill' }));
+      expect(prompts).toContainEqual(expect.objectContaining({ file: `${AGENTS_DIR}/reviewer.md`, type: 'agent' }));
+      expect(prompts).toContainEqual(expect.objectContaining({ file: `${HOOKS_DIR}/hooks.json`, type: 'hook' }));
+      expect(manifest.common).toMatchObject({ files: [`${AGENTS_DIR}/reviewer.md`, `${HOOKS_DIR}/hooks.json`] });
+    });
+
+    it('SEC-U7-2: rejects a server-supplied namespace tree path that escapes via ../ (routed through the SEC-U2-2 guard)', async () => {
+      const api = namespaceApi().seedJson(TREE_PATH, {
+        tree: [
+          { path: 'skills/alpha/SKILL.md', type: 'blob', sha: 's1' },
+          { path: `${AGENTS_DIR}/../../evil.md`, type: 'blob', sha: 'evil' }
+        ]
+      });
+      const adapter = makeAdapter({ githubApi: api });
+      const [bundle] = await adapter.fetchBundles();
+      await expect(adapter.downloadBundle(bundle)).rejects.toThrow(/Unsafe archive entry path rejected/);
+    });
+
+    it('SEC-U7-2 property: no adversarial namespace path (../, absolute) is ever written to the bundle', async () => {
+      await fc.assert(
+        fc.asyncProperty(
+          fc.constantFrom('../../escape.md', '../secret.md', 'a/../../b.md', 'sub/../../../x.md'),
+          async (evilRel) => {
+            const api = namespaceApi().seedJson(TREE_PATH, {
+              tree: [
+                { path: 'skills/alpha/SKILL.md', type: 'blob', sha: 's1' },
+                { path: `${AGENTS_DIR}/${evilRel}`, type: 'blob', sha: 'evil' }
+              ]
+            });
+            const adapter = makeAdapter({ githubApi: api });
+            const [bundle] = await adapter.fetchBundles();
+            await expect(adapter.downloadBundle(bundle)).rejects.toThrow(/Unsafe archive entry path rejected/);
+          }
+        ),
+        { numRuns: 20 }
+      );
+    });
+
+    it('SEC-U7-1: skips a malformed hooks.json namespace entry but still emits the bundle (resilient)', async () => {
+      const api = namespaceApi()
+        .seedJson(TREE_PATH, {
+          tree: [
+            { path: 'skills/alpha/SKILL.md', type: 'blob', sha: 's1' },
+            { path: `${HOOKS_DIR}/broken.json`, type: 'blob', sha: 'b' }
+          ]
+        })
+        .seedText(`${RAW_BASE}/${HOOKS_DIR}/broken.json`, '{ not json');
+      const adapter = makeAdapter({ githubApi: api });
+      const [bundle] = await adapter.fetchBundles();
+      const manifest = yaml.load(new AdmZip(await adapter.downloadBundle(bundle)).getEntry('deployment-manifest.yml')!.getData().toString('utf8')) as Record<string, unknown>;
+      // The broken hook is skipped; only the skill route remains.
+      expect((manifest.prompts as { type: string }[]).map((prompt) => prompt.type)).toEqual(['skill']);
     });
   });
 

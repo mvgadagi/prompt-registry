@@ -1,3 +1,6 @@
+import {
+  AGENT_PLUGINS_EXTENSION_NS,
+} from '@ai-primitives-hub/core';
 import fc from 'fast-check';
 import {
   describe,
@@ -6,10 +9,15 @@ import {
 } from 'vitest';
 import {
   buildAgentPluginPackage,
+  buildNamespaceEntries,
   foldMcpJson,
   isSafeArchiveEntryPath,
   mcpServerDefsFromRecord,
   mcpServersRecordFromDefs,
+  NAMESPACE_GROUPS,
+  type NamespaceFileInput,
+  namespaceGroupDir,
+  namespacePromptDescriptors,
   parseAgentPluginManifest,
   sanitizeBundleIdSegment,
 } from '../../src/harvest/agent-plugin-manifest';
@@ -202,5 +210,147 @@ describe('sanitizeBundleIdSegment (bundle-id synthesis)', () => {
         expect(sanitizeBundleIdSegment(name)).toBe(sanitizeBundleIdSegment(name));
       })
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// U7 — reverse-domain namespace (agents/hooks) parser extension
+// ---------------------------------------------------------------------------
+
+describe('namespaceGroupDir + NAMESPACE_GROUPS (U7)', () => {
+  it('exposes exactly the agents/hooks subgroups under the reverse-domain namespace', () => {
+    expect([...NAMESPACE_GROUPS]).toEqual(['agents', 'hooks']);
+    expect(namespaceGroupDir('agents')).toBe(`${AGENT_PLUGINS_EXTENSION_NS}/agents`);
+    expect(namespaceGroupDir('hooks')).toBe(`${AGENT_PLUGINS_EXTENSION_NS}/hooks`);
+  });
+
+  it('pins the namespace constant to the Amadeus reverse-domain string (reused from core, not redefined)', () => {
+    expect(AGENT_PLUGINS_EXTENSION_NS).toBe('com.amadeus.aiprimitiveshub');
+  });
+});
+
+describe('buildNamespaceEntries (U7)', () => {
+  it('maps agents/hooks dirs to the EXISTING agent/hook PrimitiveKind (no new kind) and prefixes the namespace path', () => {
+    const entries = buildNamespaceEntries([
+      { group: 'agents', relativePath: 'reviewer.md', contents: '' },
+      { group: 'hooks', relativePath: 'on-save.md', contents: '' }
+    ]);
+    expect(entries).toEqual([
+      { kind: 'agent', bundlePath: `${AGENT_PLUGINS_EXTENSION_NS}/agents/reviewer.md` },
+      { kind: 'hook', bundlePath: `${AGENT_PLUGINS_EXTENSION_NS}/hooks/on-save.md` }
+    ]);
+  });
+
+  it('skips a file under an unknown subgroup (only agents/hooks live under the namespace)', () => {
+    expect(buildNamespaceEntries([{ group: 'skills', relativePath: 'x.md', contents: '' }])).toEqual([]);
+    expect(buildNamespaceEntries([{ group: 'nonsense', relativePath: 'x.md', contents: '' }])).toEqual([]);
+  });
+
+  it('SEC-U7-1: skips a malformed .json entry (skip-invalid) and keeps a valid one (keep-valid)', () => {
+    const entries = buildNamespaceEntries([
+      { group: 'hooks', relativePath: 'hooks.json', contents: '{ not json' },
+      { group: 'hooks', relativePath: 'valid.json', contents: JSON.stringify({ hooks: [] }) },
+      { group: 'agents', relativePath: 'agent.md', contents: '# not parsed (non-JSON)' }
+    ]);
+    expect(entries.map((entry) => entry.bundlePath)).toEqual([
+      `${AGENT_PLUGINS_EXTENSION_NS}/hooks/valid.json`,
+      `${AGENT_PLUGINS_EXTENSION_NS}/agents/agent.md`
+    ]);
+  });
+
+  it('strips a leading ./ from the relative path', () => {
+    const [entry] = buildNamespaceEntries([{ group: 'agents', relativePath: './nested/a.md', contents: '' }]);
+    expect(entry.bundlePath).toBe(`${AGENT_PLUGINS_EXTENSION_NS}/agents/nested/a.md`);
+  });
+
+  it('property (SEC-U7-1): a malformed .json entry is never kept; a valid .json is always kept', () => {
+    fc.assert(
+      fc.property(fc.constantFrom('agents', 'hooks'), fc.string(), (group, garbage) => {
+        // A deliberately-malformed JSON blob (leading brace, no close).
+        const malformed = buildNamespaceEntries([{ group, relativePath: 'x.json', contents: `{${garbage}` }]);
+        let parses = true;
+        try {
+          const parsed: unknown = JSON.parse(`{${garbage}`);
+          parses = parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed);
+        } catch {
+          parses = false;
+        }
+        expect(malformed.length).toBe(parses ? 1 : 0);
+      }),
+      { numRuns: 60 }
+    );
+  });
+});
+
+describe('namespacePromptDescriptors (U7 synthesis)', () => {
+  it('derives a safe id/name/type from each entry, using the existing kind as the manifest type', () => {
+    const descriptors = namespacePromptDescriptors([
+      { kind: 'agent', bundlePath: `${AGENT_PLUGINS_EXTENSION_NS}/agents/Code Reviewer.md` },
+      { kind: 'hook', bundlePath: `${AGENT_PLUGINS_EXTENSION_NS}/hooks/on-save.json` }
+    ]);
+    expect(descriptors).toEqual([
+      {
+        id: 'agent-code-reviewer',
+        name: 'Code Reviewer',
+        description: `agent carried under ${AGENT_PLUGINS_EXTENSION_NS}`,
+        file: `${AGENT_PLUGINS_EXTENSION_NS}/agents/Code Reviewer.md`,
+        type: 'agent'
+      },
+      {
+        id: 'hook-on-save',
+        name: 'on-save',
+        description: `hook carried under ${AGENT_PLUGINS_EXTENSION_NS}`,
+        file: `${AGENT_PLUGINS_EXTENSION_NS}/hooks/on-save.json`,
+        type: 'hook'
+      }
+    ]);
+  });
+
+  it('property: every synthesized id is a safe archive segment (no separator/traversal)', () => {
+    fc.assert(
+      fc.property(fc.constantFrom<'agent' | 'hook'>('agent', 'hook'), fc.string(), (kind, stem) => {
+        const [descriptor] = namespacePromptDescriptors([
+          { kind, bundlePath: `${AGENT_PLUGINS_EXTENSION_NS}/${kind}s/${stem}.md` }
+        ]);
+        expect(isSafeArchiveEntryPath(descriptor.id)).toBe(true);
+        expect(descriptor.type).toBe(kind);
+      }),
+      { numRuns: 60 }
+    );
+  });
+});
+
+describe('buildAgentPluginPackage — extensions population (U7)', () => {
+  const manifest = { name: 'my-plugin', $schema: VALID_SCHEMA };
+
+  it('populates extensions[namespace] with agents/hooks path lists when namespace entries are present', () => {
+    const namespaceEntries = buildNamespaceEntries([
+      { group: 'agents', relativePath: 'a.md', contents: '' },
+      { group: 'hooks', relativePath: 'h.md', contents: '' }
+    ]);
+    const { package: pkg } = buildAgentPluginPackage({ manifest, skills: [], namespaceEntries, mode: 'resilient' });
+    expect(pkg?.extensions).toEqual({
+      [AGENT_PLUGINS_EXTENSION_NS]: {
+        agents: [`${AGENT_PLUGINS_EXTENSION_NS}/agents/a.md`],
+        hooks: [`${AGENT_PLUGINS_EXTENSION_NS}/hooks/h.md`]
+      }
+    });
+  });
+
+  it('keeps extensions = {} when no namespace entries are supplied (pre-U7 shape preserved)', () => {
+    expect(buildAgentPluginPackage({ manifest, skills: [], mode: 'resilient' }).package?.extensions).toEqual({});
+    expect(buildAgentPluginPackage({ manifest, skills: [], namespaceEntries: [], mode: 'resilient' }).package?.extensions).toEqual({});
+  });
+
+  it('drops the whole package (extensions included) when plugin.json is fatally invalid (parity with skills path)', () => {
+    const namespaceEntries: NamespaceFileInput[] = [{ group: 'agents', relativePath: 'a.md', contents: '' }];
+    const result = buildAgentPluginPackage({
+      manifest: { $schema: VALID_SCHEMA },
+      skills: [],
+      namespaceEntries: buildNamespaceEntries(namespaceEntries),
+      mode: 'resilient'
+    });
+    expect(result.validation.valid).toBe(false);
+    expect(result.package).toBeNull();
   });
 });
