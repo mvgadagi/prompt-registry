@@ -406,7 +406,10 @@ export class MarketplaceViewProvider implements vscode.WebviewViewProvider {
           hubName,
           contentBreakdown,
           availableVersions,
-          autoUpdateEnabled
+          autoUpdateEnabled,
+          // Carry the resolved source type so the webview can render the static
+          // "Agent Plugin" badge on the card (U6 C1). Read-only; no new fetch.
+          sourceType: source?.type
         };
       });
 
@@ -1164,13 +1167,15 @@ export class MarketplaceViewProvider implements vscode.WebviewViewProvider {
    * @param installed
    * @param breakdown
    * @param autoUpdateEnabled
+   * @param sourceType
    */
   private getBundleDetailsHtml(
     webview: vscode.Webview,
     bundle: Bundle,
     installed: InstalledBundle | undefined,
     breakdown: ContentBreakdown,
-    autoUpdateEnabled = false
+    autoUpdateEnabled = false,
+    sourceType?: string
   ): string {
     const isInstalled = !!installed;
     const installPath = installed?.installPath || 'Not installed';
@@ -1204,6 +1209,15 @@ export class MarketplaceViewProvider implements vscode.WebviewViewProvider {
 
     // Generate dynamic sections
     const installedBadge = isInstalled ? '<span class="badge"><i class="fa-icon fa-circle-check"></i> Installed</span>' : '';
+
+    // Static "Agent Plugin" badge, gated on the trusted source type. Follows the
+    // same injected-span pattern as installedBadge; the label is a fixed literal
+    // (no dynamic interpolation), so it is safe under the existing webview CSP
+    // and adds no new unescaped HTML interpolation (U6 SEC-U6-1). Distinguished
+    // by text, not color alone (WCAG 1.4.1).
+    const agentPluginBadge = sourceType === 'agent-plugins'
+      ? '<span class="badge agent-plugin-badge"><i class="fa-icon fa-puzzle-piece"></i> Agent Plugin</span>'
+      : '';
 
     const autoUpdateSection = isInstalled
       ? `
@@ -1287,6 +1301,7 @@ export class MarketplaceViewProvider implements vscode.WebviewViewProvider {
       .replace('{{cssUri}}', cssUri.toString())
       .replace('{{iconsUri}}', iconsUri.toString())
       .replace('{{installedBadge}}', installedBadge)
+      .replace('{{agentPluginBadge}}', agentPluginBadge)
       .replaceAll('{{author}}', this.escapeHtml(bundle.author || 'Unknown'))
       .replace('{{version}}', bundle.version)
       .replace('{{autoUpdateSection}}', autoUpdateSection)
@@ -1575,7 +1590,7 @@ export class MarketplaceViewProvider implements vscode.WebviewViewProvider {
       });
 
       // Set HTML content
-      panel.webview.html = this.getBundleDetailsHtml(panel.webview, bundle, installed, breakdown, autoUpdateEnabled);
+      panel.webview.html = this.getBundleDetailsHtml(panel.webview, bundle, installed, breakdown, autoUpdateEnabled, source?.type);
 
       // Handle messages from the details panel
       panel.webview.onDidReceiveMessage(

@@ -11,6 +11,10 @@ import {
   HubProfile,
 } from '../../src/types/hub';
 import {
+  RegistrySource,
+  SourceType,
+} from '../../src/types/registry';
+import {
   RegistryTreeItem,
   RegistryTreeProvider,
   TreeItemType,
@@ -1150,5 +1154,46 @@ suite('RegistryTreeProvider - Files Missing Warning Indicator', () => {
       !normalItem.contextValue?.startsWith('installedBundle.filesMissing'),
       'Normal bundle should not have filesMissing context value'
     );
+  });
+});
+
+suite('RegistryTreeItem - SOURCE description (U6 agent-plugin label)', () => {
+  const makeSource = (type: SourceType, priority = 5): RegistrySource => ({
+    id: 'src-1',
+    name: 'My Source',
+    type,
+    url: 'https://example.com/registry',
+    enabled: true,
+    priority
+  });
+
+  test('prefixes "[Agent Plugin] " onto the description for an agent-plugins source', () => {
+    const item = new RegistryTreeItem(
+      'My Source',
+      TreeItemType.SOURCE,
+      makeSource('agent-plugins', 7)
+    );
+
+    assert.strictEqual(item.description, '[Agent Plugin] priority: 7');
+  });
+
+  test('leaves the description unprefixed for a non-agent-plugins source (github)', () => {
+    const item = new RegistryTreeItem(
+      'My Source',
+      TreeItemType.SOURCE,
+      makeSource('github', 3)
+    );
+
+    assert.strictEqual(item.description, 'priority: 3');
+  });
+
+  test('does not prefix the local-agent-plugins source type (gate is agent-plugins only)', () => {
+    const item = new RegistryTreeItem(
+      'My Source',
+      TreeItemType.SOURCE,
+      makeSource('local-agent-plugins', 2)
+    );
+
+    assert.strictEqual(item.description, 'priority: 2');
   });
 });

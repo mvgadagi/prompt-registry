@@ -182,4 +182,62 @@ suite('Marketplace webview behavior', () => {
       harness.dom.window.close();
     }
   });
+
+  const loadBundlesWithSourceType = (harness: WebviewHarness, sourceType?: string): void => {
+    harness.dom.window.dispatchEvent(new harness.dom.window.MessageEvent('message', {
+      data: {
+        type: 'bundlesLoaded',
+        bundles: [{ ...makeBundle(), sourceType }],
+        filterOptions: { tags: [], sources: [], environments: [] },
+        setupState: 'complete',
+        sourcesCount: 1
+      }
+    }));
+  };
+
+  test('renders the "Agent Plugin" badge on the card for an agent-plugins bundle', () => {
+    const harness = createHarness();
+    try {
+      loadBundlesWithSourceType(harness, 'agent-plugins');
+      const { document } = harness.dom.window;
+
+      const badge = document.querySelector('.bundle-card .agent-plugin-badge');
+      assert.ok(badge, 'Agent Plugin badge should be present on the card');
+      assert.strictEqual(badge?.textContent, 'Agent Plugin');
+    } finally {
+      harness.dom.window.close();
+    }
+  });
+
+  test('omits the "Agent Plugin" badge for a non-agent-plugins bundle', () => {
+    const harness = createHarness();
+    try {
+      loadBundlesWithSourceType(harness, 'github');
+      const { document } = harness.dom.window;
+
+      assert.strictEqual(
+        document.querySelector('.bundle-card .agent-plugin-badge'),
+        null,
+        'Agent Plugin badge must be absent for a github source'
+      );
+    } finally {
+      harness.dom.window.close();
+    }
+  });
+
+  test('omits the "Agent Plugin" badge when the bundle carries no source type', () => {
+    const harness = createHarness();
+    try {
+      loadBundlesWithSourceType(harness, undefined);
+      const { document } = harness.dom.window;
+
+      assert.strictEqual(
+        document.querySelector('.bundle-card .agent-plugin-badge'),
+        null,
+        'Agent Plugin badge must be absent when sourceType is undefined'
+      );
+    } finally {
+      harness.dom.window.close();
+    }
+  });
 });
