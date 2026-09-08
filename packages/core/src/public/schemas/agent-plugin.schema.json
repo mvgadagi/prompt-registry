@@ -1,0 +1,41 @@
+{
+  "title": "Agent Plugins v1.0.0 - plugin.json",
+  "description": "DERIVED closed manifest schema for an Agent Plugins v1.0.0 package (plugin.json). Faithful hand-authored approximation of the documented v1 fields - NOT the canonical pinned copy from the Agent Plugins spec. Compiled as JSON Schema draft 2020-12 (Ajv2020 default meta). Replace with the upstream pinned schema when it can be fetched (see code-summary.md open item). The manifest name grammar is enforced in code (linear-time, ReDoS-safe), not by a schema pattern.",
+  "type": "object",
+  "required": ["$schema", "name"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Identifies the Agent Plugins v1 schema this manifest conforms to.",
+      "minLength": 1
+    },
+    "name": {
+      "type": "string",
+      "description": "Package name; grammar enforced in code."
+    },
+    "version": {
+      "type": "string",
+      "description": "Optional package version."
+    },
+    "description": {
+      "type": "string",
+      "description": "Optional human-readable description."
+    },
+    "skills": {
+      "type": "array",
+      "description": "Skills carried by the package (discovered under skills/). Populated by the parser (U2).",
+      "items": { "type": "object" }
+    },
+    "mcpServers": {
+      "type": "array",
+      "description": "MCP server definitions (from root mcp.json). Populated by the parser (U2).",
+      "items": { "type": "object" }
+    },
+    "mcpInputs": {
+      "type": "array",
+      "description": "MCP input declarations referenced via ${input:id} placeholders.",
+      "items": { "type": "object" }
+    }
+  },
+  "additionalProperties": false
+}
