@@ -12,6 +12,7 @@
  * Landing incrementally: install/ (+ its writers/ and stores/ support
  * modules) is the first real module family to land.
  */
+export * from './agent-plugin';
 export * from './collection';
 export * from './context-detection';
 export * from './discovery';
