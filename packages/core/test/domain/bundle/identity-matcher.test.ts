@@ -31,6 +31,11 @@ describe('bundleIdentitiesMatch', () => {
     expect(bundleIdentitiesMatch('local-bundle-v1.0.0', 'local-bundle-v2.0.0', 'local')).toBe(false);
     expect(bundleIdentitiesMatch('local-bundle-v1.0.0', 'local-bundle-v1.0.0', 'local')).toBe(true);
   });
+
+  it('FR-7.3: treats the additive agent-plugins types as non-GitHub (exact-match only)', () => {
+    expect(bundleIdentitiesMatch('agent-plugins-owner-repo-plugin-v1.0.0', 'agent-plugins-owner-repo-plugin-v2.0.0', 'agent-plugins')).toBe(false);
+    expect(bundleIdentitiesMatch('local-agent-plugins-dir-plugin', 'local-agent-plugins-dir-plugin', 'local-agent-plugins')).toBe(true);
+  });
 });
 
 describe('extractBaseBundleId', () => {

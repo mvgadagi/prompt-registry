@@ -22,7 +22,9 @@ export type SourceType =
   | 'local-apm'
   | 'skills'
   | 'local-skills'
-  | 'azure-devops';
+  | 'azure-devops'
+  | 'agent-plugins'
+  | 'local-agent-plugins';
 
 /**
  * A configured bundle source.

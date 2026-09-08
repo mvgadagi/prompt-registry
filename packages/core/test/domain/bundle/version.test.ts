@@ -126,3 +126,37 @@ describe('isSameBundleIdentity', () => {
     expect(isSameBundleIdentity('bundle-v1.0.0', 'local', 'bundle-v1.0.0', 'local')).toBe(true);
   });
 });
+
+describe('FR-7.3 backward-compat: additive agent-plugins source types leave bundle-id derivation byte-identical', () => {
+  it('treats agent-plugins / local-agent-plugins as non-GitHub in extractBundleIdentity (returns the id as-is)', () => {
+    // Byte-identical to how every non-github type (skills, local, apm, ...) is
+    // already handled — the new union values must not gain GitHub stripping.
+    expect(extractBundleIdentity('agent-plugins-owner-repo-my-plugin-v1.0.0', 'agent-plugins')).toBe(
+      'agent-plugins-owner-repo-my-plugin-v1.0.0'
+    );
+    expect(extractBundleIdentity('local-agent-plugins-dir-my-plugin', 'local-agent-plugins')).toBe(
+      'local-agent-plugins-dir-my-plugin'
+    );
+  });
+
+  it('keeps the pre-existing github/local/skills derivations unchanged after the union grew', () => {
+    expect(extractBundleIdentity('owner-repo-v1.0.0', 'github')).toBe('owner-repo');
+    expect(extractBundleIdentity('bundle-id-v1.0.0', 'local')).toBe('bundle-id-v1.0.0');
+    expect(extractBundleIdentity('my-skill-v1.0.0', 'skills')).toBe('my-skill-v1.0.0');
+  });
+
+  it('never matches two distinct agent-plugins ids by version-stripping (exact-match only, like skills)', () => {
+    expect(isSameBundleIdentity(
+      'agent-plugins-owner-repo-plugin-v1.0.0',
+      'agent-plugins',
+      'agent-plugins-owner-repo-plugin-v2.0.0',
+      'agent-plugins'
+    )).toBe(false);
+    expect(isSameBundleIdentity(
+      'local-agent-plugins-dir-plugin',
+      'local-agent-plugins',
+      'local-agent-plugins-dir-plugin',
+      'local-agent-plugins'
+    )).toBe(true);
+  });
+});

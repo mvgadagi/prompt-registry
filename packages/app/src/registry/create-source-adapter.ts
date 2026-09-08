@@ -34,6 +34,7 @@ import type {
   TokenProvider,
 } from '@ai-primitives-hub/core';
 import {
+  AgentPluginsSourceAdapter,
   ApmAdapter,
   AwesomeCopilotAdapter,
   AzureDevOpsAdapter,
@@ -42,6 +43,7 @@ import {
   GitHubAdapter,
   GitHubApiClient,
   LocalAdapter,
+  LocalAgentPluginsAdapter,
   LocalApmAdapter,
   LocalAwesomeCopilotAdapter,
   LocalSkillsAdapter,
@@ -141,11 +143,17 @@ export function createSourceAdapter(source: RegistrySource, deps: SourceAdapterF
     case 'local-skills': {
       return new LocalSkillsAdapter(source, deps.fs, deps.clock);
     }
+    case 'local-agent-plugins': {
+      return new LocalAgentPluginsAdapter(source, deps.fs, deps.clock);
+    }
     case 'github': {
       return new GitHubAdapter(source, buildGitHubApi(source, buildSourceTokenProvider(source, deps), deps, authentication));
     }
     case 'skills': {
       return new SkillsAdapter(source, buildGitHubApi(source, buildSourceTokenProvider(source, deps), deps, authentication), deps.clock);
+    }
+    case 'agent-plugins': {
+      return new AgentPluginsSourceAdapter(source, buildGitHubApi(source, buildSourceTokenProvider(source, deps), deps, authentication), deps.clock);
     }
     case 'awesome-copilot': {
       return new AwesomeCopilotAdapter(source, buildGitHubApi(source, buildSourceTokenProvider(source, deps), deps, authentication), deps.clock);
