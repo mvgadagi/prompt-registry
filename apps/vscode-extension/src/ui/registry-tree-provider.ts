@@ -184,7 +184,13 @@ export class RegistryTreeItem extends vscode.TreeItem {
 
       case TreeItemType.SOURCE: {
         const source = this.data as RegistrySource;
-        return `priority: ${source.priority}`;
+        const priorityLabel = `priority: ${source.priority}`;
+        // Prefix (not replace) an "Agent Plugin" source-type label so the tree
+        // distinguishes agent-plugins sources by text. Plain text — VS Code
+        // renders TreeItem.description as text, not HTML (U6 SEC-U6-2).
+        return source.type === 'agent-plugins'
+          ? `[Agent Plugin] ${priorityLabel}`
+          : priorityLabel;
       }
 
       case TreeItemType.BUNDLE: {

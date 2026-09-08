@@ -63,6 +63,16 @@ h1 {
     margin-left: 12px;
 }
 
+/*
+ * Agent Plugin badge: distinguished by the "Agent Plugin" text (WCAG 1.4.1,
+ * not color alone). Reuses the theme badge tokens so contrast is inherited
+ * from the active theme (WCAG 1.4.3 / 1.4.11 met by reuse); no custom color.
+ */
+.agent-plugin-badge {
+    background: var(--vscode-badge-background);
+    color: var(--vscode-badge-foreground);
+}
+
 .auto-update-toggle {
     display: flex;
     align-items: center;

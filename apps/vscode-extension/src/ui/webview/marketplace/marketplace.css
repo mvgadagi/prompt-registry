@@ -197,6 +197,9 @@ main { width: 100%; min-width: 0; }
 .content-count { color: var(--vscode-foreground); font-weight: 600; }
 .bundle-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 13px; }
 .tag { padding: 3px 7px; border: 1px solid var(--marketplace-border); border-radius: 4px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); font-size: 10px; }
+/* Agent Plugin badge on the marketplace card: distinguished by text (WCAG 1.4.1),
+   reuses theme badge tokens for contrast (1.4.3/1.4.11 met by reuse), no custom color. */
+.agent-plugin-badge { display: inline-block; margin-top: 5px; padding: 3px 8px; border-radius: 10px; background: var(--vscode-badge-background); color: var(--vscode-badge-foreground); font-size: 10px; font-weight: 600; }
 .bundle-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-start; gap: 6px; margin-top: auto; }
 .btn { min-height: 30px; flex: 0 1 auto; padding: 5px 11px; border: 0; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 500; }
 .btn-primary { border: 1px solid var(--marketplace-success); background: transparent; color: var(--marketplace-success); }

@@ -1134,6 +1134,12 @@
         + '<div class="bundle-header">'
         + '<div class="bundle-title">' + bundle.name + '</div>'
         + '<div class="bundle-author">by ' + (bundle.author || 'Unknown') + ' • ' + formatVersionLabel(bundle.version) + '</div>'
+        // Static "Agent Plugin" badge, gated on the trusted source type. The
+        // label is a fixed literal (no interpolation of bundle.sourceType into
+        // markup), distinguished by text not color alone (WCAG 1.4.1).
+        + (bundle.sourceType === 'agent-plugins'
+          ? '<span class="agent-plugin-badge">Agent Plugin</span>'
+          : '')
         + '</div>'
 
         + '<div class="bundle-description">'
