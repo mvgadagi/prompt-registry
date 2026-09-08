@@ -2,11 +2,13 @@
  * Source adapters barrel export.
  * @module adapters
  */
+export * from './agent-plugins-adapter';
 export * from './apm-adapter';
 export * from './awesome-copilot-adapter';
 export * from './azure-devops-adapter';
 export * from './base-source-adapter';
 export * from './github-adapter';
+export * from './local-agent-plugins-adapter';
 export * from './local-adapter';
 export * from './local-apm-adapter';
 export * from './local-awesome-copilot-adapter';
