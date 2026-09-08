@@ -29,22 +29,28 @@
 import * as crypto from 'node:crypto';
 import * as nodeFs from 'node:fs';
 import * as path from 'node:path';
-import type {
-  Bundle,
-  Clock,
-  FileSystem,
-  RegistrySource,
-  SkillRef,
-  SourceMetadata,
-  ValidationResult,
+import {
+  AGENT_PLUGINS_EXTENSION_NS,
+  type Bundle,
+  type Clock,
+  type FileSystem,
+  type RegistrySource,
+  type SkillRef,
+  type SourceMetadata,
+  type ValidationResult,
 } from '@ai-primitives-hub/core';
 import archiver from 'archiver';
 import * as yaml from 'js-yaml';
 import {
   buildAgentPluginPackage,
+  buildNamespaceEntries,
   type FoldedMcp,
   foldMcpJson,
   isSafeArchiveEntryPath,
+  NAMESPACE_GROUPS,
+  type NamespaceEntry,
+  type NamespaceFileInput,
+  namespacePromptDescriptors,
   parseAgentPluginManifest,
   sanitizeBundleIdSegment,
 } from '../harvest/agent-plugin-manifest';
@@ -82,6 +88,8 @@ interface DiscoveredPlugin {
   license?: string;
   skills: SkillItem[];
   mcp?: FoldedMcp;
+  /** Validated agents/hooks under `com.amadeus.aiprimitiveshub/{agents,hooks}/` (U7). */
+  namespaceEntries: NamespaceEntry[];
   contentHash: string;
 }
 
@@ -248,13 +256,46 @@ export class LocalAgentPluginsAdapter extends BaseSourceAdapter {
     return hash.digest('hex');
   }
 
+  /**
+   * U7: enumerate files under the reverse-domain namespace dir
+   * `com.amadeus.aiprimitiveshub/{agents,hooks}/`. Reuses the recursive
+   * {@link listSkillFiles} walker over the injected `FileSystem` port. Only
+   * `.json` entries are read here (for the resilient manifest-level parse
+   * check in {@link buildNamespaceEntries}); the SEC-U7-3 realpath guard is
+   * applied to every namespace file at archive time in
+   * {@link createBundleArchive}.
+   *
+   * Spec basis (Agent Plugins v1.0.0): §8.2 makes the reverse-domain
+   * top-level dir the client-extension directory (example
+   * `com.example.client/hooks/hooks.json`); §6.1 restricts a conformant
+   * client's discovery to `skills/` + `mcp.json`.
+   */
+  private async scanNamespaceFiles(): Promise<NamespaceFileInput[]> {
+    const root = this.getLocalPath();
+    const files: NamespaceFileInput[] = [];
+    for (const group of NAMESPACE_GROUPS) {
+      const groupDir = path.join(root, AGENT_PLUGINS_EXTENSION_NS, group);
+      if (!(await this.directoryExists(groupDir))) {
+        continue;
+      }
+      for (const relativePath of await this.listSkillFiles(groupDir)) {
+        const contents = relativePath.toLowerCase().endsWith('.json')
+          ? await this.fs.readFile(path.join(groupDir, relativePath))
+          : '';
+        files.push({ group, relativePath, contents });
+      }
+    }
+    return files;
+  }
+
   private async discoverPlugin(): Promise<DiscoveredPlugin | undefined> {
     const manifest = await this.readManifest();
     const skills = await this.scanSkillsDirectory();
     const mcp = await this.readMcp();
+    const namespaceEntries = buildNamespaceEntries(await this.scanNamespaceFiles());
 
     const skillRefs: SkillRef[] = skills.map((skill) => ({ name: skill.name, path: skill.path }));
-    const { package: pkg } = buildAgentPluginPackage({ manifest, skills: skillRefs, mcp, mode: 'resilient' });
+    const { package: pkg } = buildAgentPluginPackage({ manifest, skills: skillRefs, mcp, namespaceEntries, mode: 'resilient' });
     if (!pkg) {
       return undefined;
     }
@@ -267,6 +308,7 @@ export class LocalAgentPluginsAdapter extends BaseSourceAdapter {
       license,
       skills,
       mcp,
+      namespaceEntries,
       contentHash: await this.calculateContentHash(skills)
     };
   }
@@ -313,7 +355,8 @@ export class LocalAgentPluginsAdapter extends BaseSourceAdapter {
       },
       common: {
         directories: plugin.skills.map((skill) => `skills/${skill.id}`),
-        files: [],
+        // U7: namespace agent/hook files are carried at their bundle-root path.
+        files: plugin.namespaceEntries.map((entry) => entry.bundlePath),
         include_patterns: ['**/*'],
         exclude_patterns: []
       },
@@ -325,14 +368,22 @@ export class LocalAgentPluginsAdapter extends BaseSourceAdapter {
           common_bundle: sanitizeBundleIdSegment(plugin.name)
         }
       },
-      prompts: plugin.skills.map((skill) => ({
-        id: skill.id,
-        name: skill.name,
-        description: skill.description,
-        file: `skills/${skill.id}/SKILL.md`,
-        type: 'skill',
-        tags: PLUGIN_TAGS
-      }))
+      prompts: [
+        ...plugin.skills.map((skill) => ({
+          id: skill.id,
+          name: skill.name,
+          description: skill.description,
+          file: `skills/${skill.id}/SKILL.md`,
+          type: 'skill',
+          tags: PLUGIN_TAGS
+        })),
+        // U7: agents/hooks synthesized alongside skills, using the EXISTING
+        // `agent`/`hook` PrimitiveKind as the manifest `type` (no new kind).
+        ...namespacePromptDescriptors(plugin.namespaceEntries).map((descriptor) => ({
+          ...descriptor,
+          tags: PLUGIN_TAGS
+        }))
+      ]
     };
     if (plugin.mcp && Object.keys(plugin.mcp.servers).length > 0) {
       manifest.mcpServers = plugin.mcp.servers;
@@ -365,6 +416,20 @@ export class LocalAgentPluginsAdapter extends BaseSourceAdapter {
         this.assertWithinRoot(absPath); // SEC-U2-7
         archive.append(await this.fs.readFile(absPath), { name: zipPath });
       }
+    }
+
+    // U7: bake the validated namespace agents/hooks. The bundle path passes
+    // U2's SEC-U2-2 guard (SEC-U7-2, reject `..`/absolute), and every file is
+    // resolved with U2's SEC-U2-7 `node:fs` realpath guard (SEC-U7-3) so a
+    // symlink escaping the plugin root is rejected before it is written.
+    for (const entry of plugin.namespaceEntries) {
+      const zipPath = entry.bundlePath;
+      if (!isSafeArchiveEntryPath(zipPath)) {
+        throw new Error(`Unsafe archive entry path rejected (SEC-U7-2): ${zipPath}`);
+      }
+      const absPath = path.join(this.getLocalPath(), zipPath);
+      this.assertWithinRoot(absPath); // SEC-U7-3 (reuses the SEC-U2-7 realpath guard)
+      archive.append(await this.fs.readFile(absPath), { name: zipPath });
     }
 
     await archive.finalize();

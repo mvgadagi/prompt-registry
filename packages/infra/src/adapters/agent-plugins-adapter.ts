@@ -28,22 +28,28 @@
  * @module adapters/agent-plugins-adapter
  */
 import * as crypto from 'node:crypto';
-import type {
-  Bundle,
-  Clock,
-  GitHubApi,
-  RegistrySource,
-  SkillRef,
-  SourceMetadata,
-  ValidationResult,
+import {
+  AGENT_PLUGINS_EXTENSION_NS,
+  type Bundle,
+  type Clock,
+  type GitHubApi,
+  type RegistrySource,
+  type SkillRef,
+  type SourceMetadata,
+  type ValidationResult,
 } from '@ai-primitives-hub/core';
 import archiver from 'archiver';
 import * as yaml from 'js-yaml';
 import {
   buildAgentPluginPackage,
+  buildNamespaceEntries,
   type FoldedMcp,
   foldMcpJson,
   isSafeArchiveEntryPath,
+  NAMESPACE_GROUPS,
+  type NamespaceEntry,
+  type NamespaceFileInput,
+  namespacePromptDescriptors,
   parseAgentPluginManifest,
   sanitizeBundleIdSegment,
 } from '../harvest/agent-plugin-manifest';
@@ -89,13 +95,15 @@ interface SkillItem {
   files: GitTreeEntry[];
 }
 
-/** The fully-discovered remote plugin: its validated identity + skills + folded MCP. */
+/** The fully-discovered remote plugin: its validated identity + skills + folded MCP + namespace entries. */
 interface DiscoveredPlugin {
   name: string;
   description: string;
   license?: string;
   skills: SkillItem[];
   mcp?: FoldedMcp;
+  /** Validated agents/hooks under `com.amadeus.aiprimitiveshub/{agents,hooks}/` (U7). */
+  namespaceEntries: NamespaceEntry[];
   contentHash: string;
 }
 
@@ -245,14 +253,62 @@ export class AgentPluginsSourceAdapter extends BaseSourceAdapter {
     }
   }
 
+  /**
+   * U7: enumerate files under the reverse-domain namespace dir
+   * `com.amadeus.aiprimitiveshub/{agents,hooks}/` from the recursive Git
+   * tree. Only `.json` entries are fetched here (for the resilient
+   * manifest-level parse check in {@link buildNamespaceEntries}); a
+   * per-entry fetch failure skips just that entry (SEC-U7-1). Mirrors
+   * {@link scanSkillsDirectory}'s tree walk.
+   *
+   * Spec basis (Agent Plugins v1.0.0): §8.2 makes the reverse-domain
+   * top-level dir the client-extension directory (example
+   * `com.example.client/hooks/hooks.json`); §6.1 restricts a conformant
+   * client's discovery to `skills/` + `mcp.json`, so this dir is inert to a
+   * non-implementing client.
+   */
+  private async scanNamespaceFiles(): Promise<NamespaceFileInput[]> {
+    const { owner, repo } = this.parseGitHubUrl();
+    const tree = await this.githubApi.getJson<{ tree?: GitTreeEntry[] }>(
+      `/repos/${owner}/${repo}/git/trees/${this.branch}?recursive=1`
+    );
+
+    const files: NamespaceFileInput[] = [];
+    for (const entry of tree.tree ?? []) {
+      if (entry.type !== 'blob') {
+        continue;
+      }
+      const segments = entry.path.split('/');
+      if (segments[0] !== AGENT_PLUGINS_EXTENSION_NS || segments.length < 3) {
+        continue;
+      }
+      const group = segments[1];
+      if (!(NAMESPACE_GROUPS as readonly string[]).includes(group)) {
+        continue;
+      }
+      const relativePath = segments.slice(2).join('/');
+      let contents = '';
+      if (relativePath.toLowerCase().endsWith('.json')) {
+        try {
+          contents = await this.githubApi.getText(this.rawUrl(entry.path));
+        } catch {
+          continue; // unreadable JSON entry → skip (resilient)
+        }
+      }
+      files.push({ group, relativePath, contents });
+    }
+    return files;
+  }
+
   /** Discover + validate the whole plugin. Returns `undefined` when validation is fatally invalid (resilient consume). */
   private async discoverPlugin(): Promise<DiscoveredPlugin | undefined> {
     const manifest = await this.readManifest();
     const skills = await this.scanSkillsDirectory();
     const mcp = await this.readMcp();
+    const namespaceEntries = buildNamespaceEntries(await this.scanNamespaceFiles());
 
     const skillRefs: SkillRef[] = skills.map((skill) => ({ name: skill.name, path: skill.path }));
-    const { package: pkg } = buildAgentPluginPackage({ manifest, skills: skillRefs, mcp, mode: 'resilient' });
+    const { package: pkg } = buildAgentPluginPackage({ manifest, skills: skillRefs, mcp, namespaceEntries, mode: 'resilient' });
     if (!pkg) {
       return undefined;
     }
@@ -266,6 +322,7 @@ export class AgentPluginsSourceAdapter extends BaseSourceAdapter {
       license,
       skills,
       mcp,
+      namespaceEntries,
       contentHash: calculateContentHash(hashEntries)
     };
   }
@@ -312,7 +369,8 @@ export class AgentPluginsSourceAdapter extends BaseSourceAdapter {
       },
       common: {
         directories: plugin.skills.map((skill) => `skills/${skill.id}`),
-        files: [],
+        // U7: namespace agent/hook files are carried at their bundle-root path.
+        files: plugin.namespaceEntries.map((entry) => entry.bundlePath),
         include_patterns: ['**/*'],
         exclude_patterns: []
       },
@@ -324,14 +382,22 @@ export class AgentPluginsSourceAdapter extends BaseSourceAdapter {
           common_bundle: sanitizeBundleIdSegment(plugin.name)
         }
       },
-      prompts: plugin.skills.map((skill) => ({
-        id: skill.id,
-        name: skill.name,
-        description: skill.description,
-        file: `skills/${skill.id}/SKILL.md`,
-        type: 'skill',
-        tags: PLUGIN_TAGS
-      }))
+      prompts: [
+        ...plugin.skills.map((skill) => ({
+          id: skill.id,
+          name: skill.name,
+          description: skill.description,
+          file: `skills/${skill.id}/SKILL.md`,
+          type: 'skill',
+          tags: PLUGIN_TAGS
+        })),
+        // U7: agents/hooks synthesized alongside skills, using the EXISTING
+        // `agent`/`hook` PrimitiveKind as the manifest `type` (no new kind).
+        ...namespacePromptDescriptors(plugin.namespaceEntries).map((descriptor) => ({
+          ...descriptor,
+          tags: PLUGIN_TAGS
+        }))
+      ]
     };
     if (plugin.mcp && Object.keys(plugin.mcp.servers).length > 0) {
       // Servers flow as a name→config Record end-to-end (helper output → manifest);
@@ -395,6 +461,18 @@ export class AgentPluginsSourceAdapter extends BaseSourceAdapter {
           await this.addDirectoryToArchive(archive, owner, repo, item.path, entryZipPath);
         }
       }
+    }
+
+    // U7: bake the validated namespace agents/hooks into the bundle. Each
+    // entry's bundle path is checked with U2's SEC-U2-2 guard BEFORE any
+    // fetch, so a server-supplied `..`/absolute tree path is rejected and
+    // never fetched or written (SEC-U7-2).
+    for (const entry of plugin.namespaceEntries) {
+      if (!isSafeArchiveEntryPath(entry.bundlePath)) {
+        throw new Error(`Unsafe archive entry path rejected (SEC-U7-2): ${entry.bundlePath}`);
+      }
+      const bytes = Buffer.from(await this.githubApi.download(this.rawUrl(entry.bundlePath)));
+      this.appendGuarded(archive, bytes, entry.bundlePath);
     }
 
     await archive.finalize();

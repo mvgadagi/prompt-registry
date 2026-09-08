@@ -1,8 +1,9 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type {
-  Bundle,
-  RegistrySource,
+import {
+  AGENT_PLUGINS_EXTENSION_NS,
+  type Bundle,
+  type RegistrySource,
 } from '@ai-primitives-hub/core';
 import AdmZip from 'adm-zip';
 import fc from 'fast-check';
@@ -97,6 +98,31 @@ function writeRealPlugin(prefix: string, opts: { mcp?: boolean; brokenSkill?: bo
 
 function makeRealAdapter(root: string): LocalAgentPluginsAdapter {
   return new LocalAgentPluginsAdapter(makeSource({ url: root }), new NodeFileSystem(), new FixedClock(0));
+}
+
+/**
+ * Write reverse-domain namespace files (U7) into an already-created plugin root.
+ * @param root
+ * @param opts
+ * @param opts.agent
+ * @param opts.hook
+ * @param opts.malformedHook
+ */
+function writeNamespace(root: string, opts: { agent?: boolean; hook?: boolean; malformedHook?: boolean } = {}): void {
+  const agentsDir = path.join(root, AGENT_PLUGINS_EXTENSION_NS, 'agents');
+  const hooksDir = path.join(root, AGENT_PLUGINS_EXTENSION_NS, 'hooks');
+  if (opts.agent) {
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(path.join(agentsDir, 'reviewer.md'), '# Reviewer agent');
+  }
+  if (opts.hook) {
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.writeFileSync(path.join(hooksDir, 'hooks.json'), JSON.stringify({ hooks: [{ event: 'PostToolUse' }] }));
+  }
+  if (opts.malformedHook) {
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.writeFileSync(path.join(hooksDir, 'broken.json'), '{ not json');
+  }
 }
 
 function readZipManifest(zip: Buffer): Record<string, unknown> {
@@ -260,6 +286,106 @@ describe('LocalAgentPluginsAdapter', () => {
       fs.writeFileSync(secret, 'TOP SECRET');
       // A skill "file" that is actually a symlink pointing outside the plugin root.
       fs.symlinkSync(secret, path.join(root, 'skills', 'alpha', 'leak.txt'));
+
+      const adapter = makeRealAdapter(root);
+      const [bundle] = await adapter.fetchBundles();
+      await expect(adapter.downloadBundle(bundle)).rejects.toThrow(/escaping the plugin root \(SEC-U2-7\)/);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // U7 — reverse-domain namespace (agents/hooks) synthesis (real temp-dir)
+  // -------------------------------------------------------------------------
+  describe('namespace agents/hooks synthesis (U7)', () => {
+    const AGENTS_DIR = `${AGENT_PLUGINS_EXTENSION_NS}/agents`;
+    const HOOKS_DIR = `${AGENT_PLUGINS_EXTENSION_NS}/hooks`;
+    const cleanups: (() => void)[] = [];
+    afterEach(() => {
+      while (cleanups.length > 0) {
+        cleanups.pop()?.();
+      }
+    });
+
+    it('parses + validates + maps agents/hooks and bakes them into the manifest and the ZIP', async () => {
+      const [root, cleanup] = writeRealPlugin('u7-golden-', { mcp: true });
+      writeNamespace(root, { agent: true, hook: true });
+      cleanups.push(cleanup);
+      const adapter = makeRealAdapter(root);
+      const [bundle] = await adapter.fetchBundles();
+      const zip = await adapter.downloadBundle(bundle);
+
+      const entries = new AdmZip(zip).getEntries().map((entry) => entry.entryName);
+      expect(entries).toContain(`${AGENTS_DIR}/reviewer.md`);
+      expect(entries).toContain(`${HOOKS_DIR}/hooks.json`);
+      expect(entries).toContain('skills/alpha/SKILL.md');
+
+      const manifest = readZipManifest(zip);
+      const prompts = manifest.prompts as { file: string; type: string }[];
+      expect(prompts).toContainEqual(expect.objectContaining({ file: 'skills/alpha/SKILL.md', type: 'skill' }));
+      expect(prompts).toContainEqual(expect.objectContaining({ file: `${AGENTS_DIR}/reviewer.md`, type: 'agent' }));
+      expect(prompts).toContainEqual(expect.objectContaining({ file: `${HOOKS_DIR}/hooks.json`, type: 'hook' }));
+      expect(manifest.common).toMatchObject({ files: [`${AGENTS_DIR}/reviewer.md`, `${HOOKS_DIR}/hooks.json`] });
+    });
+
+    it('SEC-U7-1: skips a malformed hooks .json entry (resilient) while keeping the valid agent', async () => {
+      const [root, cleanup] = writeRealPlugin('u7-skip-');
+      writeNamespace(root, { agent: true, malformedHook: true });
+      cleanups.push(cleanup);
+      const adapter = makeRealAdapter(root);
+      const [bundle] = await adapter.fetchBundles();
+      const manifest = readZipManifest(await adapter.downloadBundle(bundle));
+      const files = (manifest.prompts as { file: string }[]).map((prompt) => prompt.file);
+      expect(files).toContain(`${AGENTS_DIR}/reviewer.md`);
+      expect(files.some((file) => file.includes('broken.json'))).toBe(false);
+    });
+
+    it('SEC-U7-5 conformance: the namespace dir is additive/inert — skills + mcp.json synthesis is byte-identical with or without it', async () => {
+      const [rootPlain, cleanupPlain] = writeRealPlugin('u7-conf-plain-', { mcp: true });
+      const [rootExt, cleanupExt] = writeRealPlugin('u7-conf-ext-', { mcp: true });
+      writeNamespace(rootExt, { agent: true, hook: true });
+      cleanups.push(cleanupPlain, cleanupExt);
+
+      const plainManifest = readZipManifest(await (async () => {
+        const adapter = makeRealAdapter(rootPlain);
+        return adapter.downloadBundle((await adapter.fetchBundles())[0]);
+      })());
+      const extAdapter = makeRealAdapter(rootExt);
+      const extManifest = readZipManifest(await extAdapter.downloadBundle((await extAdapter.fetchBundles())[0]));
+
+      // A conformant "skills + mcp.json only" view: filter to the skill routes.
+      const skillView = (manifest: Record<string, unknown>): unknown =>
+        (manifest.prompts as { type: string }[]).filter((prompt) => prompt.type === 'skill');
+      expect(skillView(extManifest)).toEqual(skillView(plainManifest));
+      // MCP synthesis is untouched by the presence of the namespace dir.
+      expect(extManifest.mcpServers).toEqual(plainManifest.mcpServers);
+      expect(extManifest.mcpInputs).toEqual(plainManifest.mcpInputs);
+      // ...and the namespace dir is purely additive on top.
+      const extFiles = (extManifest.prompts as { type: string }[]).map((prompt) => prompt.type);
+      expect(extFiles).toContain('agent');
+      expect(extFiles).toContain('hook');
+    });
+  });
+
+  // SEC-U7-3 reuses the node:fs realpath guard, so it needs a real temp-dir
+  // fixture (the in-memory double has no symlink concept) — same as SEC-U2-7.
+  describe('SEC-U7-3 (namespace symlink escape) — real temp-dir fixture', () => {
+    const cleanups: (() => void)[] = [];
+    afterEach(() => {
+      while (cleanups.length > 0) {
+        cleanups.pop()?.();
+      }
+    });
+
+    it('rejects a namespace agent file that is a symlink escaping the plugin root', async () => {
+      const [root, cleanupRoot] = writeRealPlugin('u7-evil-');
+      const [outside, cleanupOutside] = createTempDir('u7-secret-');
+      cleanups.push(cleanupRoot, cleanupOutside);
+
+      const secret = path.join(outside, 'secret.txt');
+      fs.writeFileSync(secret, 'TOP SECRET');
+      fs.mkdirSync(path.join(root, AGENT_PLUGINS_EXTENSION_NS, 'agents'), { recursive: true });
+      // A namespace "agent" file that is actually a symlink pointing outside the plugin root.
+      fs.symlinkSync(secret, path.join(root, AGENT_PLUGINS_EXTENSION_NS, 'agents', 'leak.md'));
 
       const adapter = makeRealAdapter(root);
       const [bundle] = await adapter.fetchBundles();

@@ -32,11 +32,14 @@
  */
 
 import {
+  AGENT_PLUGINS_EXTENSION_NS,
   type AgentPluginPackage,
   type AgentPluginValidationMode,
   type McpInput,
   type McpServerDef,
+  normalizePrimitiveKind,
   type PluginManifest,
+  type PrimitiveKind,
   type SkillRef,
   validateAgentPluginManifest,
   type ValidationResult,
@@ -44,6 +47,7 @@ import {
 import {
   extractPluginMcpServers,
   parsePluginManifest,
+  stripLeadingDotSlash,
 } from './plugin-manifest';
 
 /**
@@ -66,8 +70,174 @@ export interface BuildAgentPluginPackageInput {
   skills: SkillRef[];
   /** Folded MCP declarations, when a root `mcp.json` was present. */
   mcp?: FoldedMcp;
+  /**
+   * Validated agents/hooks discovered under the reverse-domain namespace
+   * dir (`com.amadeus.aiprimitiveshub/{agents,hooks}/`), adapter-supplied
+   * via {@link buildNamespaceEntries} (U7). When present and non-empty they
+   * populate {@link AgentPluginPackage.extensions}; absent leaves it `{}`.
+   */
+  namespaceEntries?: NamespaceEntry[];
   /** `resilient` for consume (skip-invalid), `strict` for authoring (U4). */
   mode: AgentPluginValidationMode;
+}
+
+/**
+ * The reverse-domain namespace subgroups U7 carries. Each maps to an
+ * EXISTING {@link PrimitiveKind} (`agents → agent`, `hooks → hook`) via
+ * `normalizePrimitiveKind` — U7 introduces no new kind.
+ */
+export const NAMESPACE_GROUPS = ['agents', 'hooks'] as const;
+
+/** A namespace subgroup directory name (`'agents'` | `'hooks'`). */
+export type NamespaceGroup = typeof NAMESPACE_GROUPS[number];
+
+/**
+ * A raw namespace file handed by an adapter to the pure parser for the
+ * resilient manifest-level check. The adapter owns disk/GitHub enumeration
+ * (per the U2 purity boundary); this is the discovered-input DTO.
+ */
+export interface NamespaceFileInput {
+  /** The subgroup dir this file was found under (expected `'agents'`/`'hooks'`). */
+  group: string;
+  /** Path relative to the subgroup dir (e.g. `'reviewer.md'`, `'hooks.json'`). */
+  relativePath: string;
+  /**
+   * UTF-8 contents — REQUIRED for a `.json` entry (so the manifest-level
+   * parse guard can run); may be empty for non-JSON files, which carry no
+   * manifest-level check.
+   */
+  contents: string;
+}
+
+/**
+ * A validated namespace entry, mapped to an existing {@link PrimitiveKind}.
+ * Its {@link bundlePath} is the path the file takes inside the synthesized
+ * bundle (relative to the bundle root, under the namespace dir).
+ */
+export interface NamespaceEntry {
+  /** Canonical primitive kind — `'agent'` or `'hook'`. */
+  kind: PrimitiveKind;
+  /** Path relative to the bundle root, under {@link AGENT_PLUGINS_EXTENSION_NS}. */
+  bundlePath: string;
+}
+
+/**
+ * The relative directory a namespace subgroup lives under.
+ *
+ * The layout is the sanctioned Agent Plugins v1.0.0 client-extension
+ * representation: **§8 Client extensions** places client-specific FILES
+ * under a top-level directory named for the reverse-domain namespace, and
+ * **§8.2 Extension directories** makes that top-level dir the extension dir
+ * (spec example `com.example.client/hooks/hooks.json`) — directly analogous
+ * to `com.amadeus.aiprimitiveshub/{agents,hooks}/`. (Pinned to v1.0.0,
+ * matching the core's pinned schemas.)
+ * @param group - The subgroup (`'agents'` | `'hooks'`).
+ * @returns The dir relative to the plugin/bundle root.
+ */
+export function namespaceGroupDir(group: NamespaceGroup): string {
+  return `${AGENT_PLUGINS_EXTENSION_NS}/${group}`;
+}
+
+/**
+ * Map discovered namespace files to validated {@link NamespaceEntry}s (U7).
+ *
+ * - Maps the subgroup dir to an EXISTING kind via `normalizePrimitiveKind`
+ *   (`agents → agent`, `hooks → hook`); anything else is skipped (no new
+ *   kind is introduced).
+ * - SEC-U7-1 (resilient skip-invalid / keep-valid, parity with U2's skills
+ *   path): a `.json` entry must parse as a JSON object — the shared parse
+ *   guard ({@link parseAgentPluginManifest}) is reused rather than
+ *   re-implementing `JSON.parse` handling; a malformed `.json` entry is
+ *   skipped, valid entries (and non-JSON files, which carry no manifest-level
+ *   check) are kept.
+ *
+ * Pure (no I/O): the resulting {@link NamespaceEntry.bundlePath}s are guarded
+ * against traversal at synthesis time by the adapters (SEC-U7-2, reusing
+ * U2's {@link isSafeArchiveEntryPath}); this function does not write.
+ * @param files - Discovered namespace files (adapter-supplied).
+ * @returns The validated, kind-mapped entries, in discovery order.
+ */
+export function buildNamespaceEntries(files: NamespaceFileInput[]): NamespaceEntry[] {
+  const entries: NamespaceEntry[] = [];
+  for (const file of files) {
+    const kind = normalizePrimitiveKind(file.group);
+    if (kind !== 'agent' && kind !== 'hook') {
+      continue;
+    }
+    if (file.relativePath.toLowerCase().endsWith('.json')) {
+      try {
+        parseAgentPluginManifest(file.contents);
+      } catch {
+        continue;
+      }
+    }
+    entries.push({
+      kind,
+      bundlePath: `${AGENT_PLUGINS_EXTENSION_NS}/${file.group}/${stripLeadingDotSlash(file.relativePath)}`
+    });
+  }
+  return entries;
+}
+
+/** A synthesized deployment-manifest `prompts[]` descriptor for a namespace entry. */
+export interface NamespacePromptDescriptor {
+  /** Stable, safe id derived from the entry's kind + file stem. */
+  id: string;
+  /** Human-readable name (the file stem). */
+  name: string;
+  /** Short description noting the carrying namespace. */
+  description: string;
+  /** The entry's bundle-root-relative path. */
+  file: string;
+  /** The existing primitive kind (`'agent'` | `'hook'`) used as the manifest `type`. */
+  type: PrimitiveKind;
+}
+
+/**
+ * Turn validated namespace entries into deployment-manifest `prompts[]`
+ * descriptors, so agents/hooks are synthesized alongside the skills/MCP
+ * entries (shared by both adapters for identical, testable output). The
+ * `type` is the existing `agent`/`hook` kind — no new kind. Ids are
+ * sanitized via {@link sanitizeBundleIdSegment} so they never carry a path
+ * separator or traversal.
+ * @param entries - Validated namespace entries.
+ * @returns The manifest prompt descriptors, in entry order.
+ */
+export function namespacePromptDescriptors(entries: NamespaceEntry[]): NamespacePromptDescriptor[] {
+  return entries.map((entry) => {
+    const base = entry.bundlePath.split('/').pop() ?? entry.bundlePath;
+    const stem = base.replace(/\.[^.]+$/u, '');
+    return {
+      id: sanitizeBundleIdSegment(`${entry.kind}-${stem}`),
+      name: stem,
+      description: `${entry.kind} carried under ${AGENT_PLUGINS_EXTENSION_NS}`,
+      file: entry.bundlePath,
+      type: entry.kind
+    };
+  });
+}
+
+/**
+ * Build the `AgentPluginPackage.extensions` map from validated namespace
+ * entries. Empty entries → `{}` (the pre-U7 shape is preserved). When
+ * present, entries are keyed under {@link AGENT_PLUGINS_EXTENSION_NS} and
+ * split into `agents`/`hooks` path lists. A conformant Agent Plugins client
+ * ignores this namespace (§11.1.3 / §11.3.1: unimplemented `extensions`
+ * namespaces and unsupported component types are ignored), so the slot is
+ * inert to a non-implementing client.
+ * @param entries - Validated namespace entries (may be undefined/empty).
+ * @returns The extensions map.
+ */
+function buildExtensionsMap(entries: NamespaceEntry[] | undefined): Record<string, unknown> {
+  if (!entries || entries.length === 0) {
+    return {};
+  }
+  return {
+    [AGENT_PLUGINS_EXTENSION_NS]: {
+      agents: entries.filter((entry) => entry.kind === 'agent').map((entry) => entry.bundlePath),
+      hooks: entries.filter((entry) => entry.kind === 'hook').map((entry) => entry.bundlePath)
+    }
+  };
 }
 
 /** Outcome of building a package: the validation result plus, when the manifest is valid, the model. */
@@ -192,9 +362,10 @@ export function mcpServersRecordFromDefs(defs: McpServerDef[]): Record<string, u
  * not re-implement schema/name rules). On a fatal issue (unparseable root,
  * missing/mistyped `$schema`/`name`) the plugin is unusable and `package` is
  * `null`; non-fatal issues in `resilient` mode are surfaced as warnings while
- * the package still builds (FR-5.2). The `extensions` slot is left empty —
- * agents/hooks under the reverse-domain namespace are populated by U7 (R4).
- * @param input - The manifest, discovered skills, folded MCP, and mode.
+ * the package still builds (FR-5.2). The `extensions` slot is populated
+ * from `input.namespaceEntries` when present (U7 — agents/hooks under the
+ * reverse-domain namespace); it stays `{}` when none are supplied (R4).
+ * @param input - The manifest, discovered skills, folded MCP, namespace entries, and mode.
  * @returns The validation result and, when valid, the built package.
  */
 export function buildAgentPluginPackage(input: BuildAgentPluginPackageInput): BuildAgentPluginPackageResult {
@@ -210,7 +381,9 @@ export function buildAgentPluginPackage(input: BuildAgentPluginPackageInput): Bu
     $schema: record.$schema as string,
     skills: input.skills,
     mcpServers: input.mcp ? mcpServerDefsFromRecord(input.mcp.servers) : [],
-    extensions: {}
+    // U7: agents/hooks under the reverse-domain namespace populate `extensions`
+    // (empty when none — preserving U2's pre-U7 `{}` shape).
+    extensions: buildExtensionsMap(input.namespaceEntries)
   };
   if (input.mcp && input.mcp.inputs.length > 0) {
     pkg.mcpInputs = input.mcp.inputs;
