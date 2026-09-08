@@ -91,6 +91,44 @@ describe('source commands', () => {
       const result = await run(['source', 'add', '--type', 'local', '-o', 'json']);
       expect(result.exitCode).not.toBe(0);
     });
+
+    it('persists a source with type "agent-plugins" (registration only)', async () => {
+      const result = await run([
+        'source', 'add', '--type', 'agent-plugins', '--url', 'owner/repo', '-o', 'json'
+      ]);
+      expect(result.exitCode).toBe(0);
+      const envelope = parseJson<{ source: { id: string; type: string; url: string } }>(result.stdout);
+      expect(envelope.data.source.type).toBe('agent-plugins');
+      expect(envelope.data.source.url).toBe('owner/repo');
+      // sourceId derived via the existing generateSourceId(type, url) → `{type}-{12hex}`.
+      expect(envelope.data.source.id).toMatch(/^agent-plugins-[0-9a-f]{12}$/);
+
+      const listResult = await run(['source', 'list', '-o', 'json']);
+      const listEnvelope = parseJson<{ sources: { type: string }[] }>(listResult.stdout);
+      expect(listEnvelope.data.sources.map((s) => s.type)).toContain('agent-plugins');
+    });
+
+    it('persists a source with type "local-agent-plugins" at parity with local sources', async () => {
+      const result = await run([
+        'source', 'add', '--type', 'local-agent-plugins', '--url', localDir, '--id', 'local-agent-plugins', '-o', 'json'
+      ]);
+      expect(result.exitCode).toBe(0);
+      const envelope = parseJson<{ source: { id: string; type: string; url: string } }>(result.stdout);
+      expect(envelope.data.source).toMatchObject({
+        id: 'local-agent-plugins',
+        type: 'local-agent-plugins',
+        url: localDir
+      });
+
+      const listResult = await run(['source', 'list', '-o', 'json']);
+      const listEnvelope = parseJson<{ sources: { id: string; type: string }[] }>(listResult.stdout);
+      expect(listEnvelope.data.sources.find((s) => s.id === 'local-agent-plugins')?.type).toBe('local-agent-plugins');
+    });
+
+    it('fails with a non-zero exit code when --url is missing for agent-plugins', async () => {
+      const result = await run(['source', 'add', '--type', 'agent-plugins', '-o', 'json']);
+      expect(result.exitCode).not.toBe(0);
+    });
   });
 
   describe('source list', () => {

@@ -142,6 +142,32 @@ export class SourceCommands {
         return uris && uris.length > 0 ? uris[0].fsPath : undefined;
       }
 
+      case 'agent-plugins': {
+        return await vscode.window.showInputBox({
+          prompt: 'Enter GitHub repository URL containing agent plugins (e.g., owner/repo)',
+          placeHolder: 'https://github.com/owner/repo',
+          validateInput: (value) => {
+            if (!value || !/github\.com/.test(value)) {
+              return 'Please enter a valid GitHub URL';
+            }
+            return undefined;
+          },
+          ignoreFocusOut: true
+        });
+      }
+
+      case 'local-agent-plugins': {
+        const uris = await vscode.window.showOpenDialog({
+          canSelectFolders: true,
+          canSelectFiles: false,
+          canSelectMany: false,
+          title: 'Select local agent-plugins directory',
+          openLabel: 'Select Directory'
+        });
+
+        return uris && uris.length > 0 ? uris[0].fsPath : undefined;
+      }
+
       case 'azure-devops': {
         return await vscode.window.showInputBox({
           prompt: 'Enter Azure DevOps repository URL',
@@ -348,6 +374,16 @@ export class SourceCommands {
             label: '$(azure) Azure DevOps',
             description: 'Azure DevOps Git repository (cloud) with .collection.yml bundles',
             value: 'azure-devops'
+          },
+          {
+            label: '$(plug) Agent Plugins Repository',
+            description: 'GitHub repository containing agent plugins (agent-plugins standard)',
+            value: 'agent-plugins'
+          },
+          {
+            label: '$(folder-library) Local Agent Plugins',
+            description: 'Local filesystem directory containing agent plugins (agent-plugins standard)',
+            value: 'local-agent-plugins'
           }
         ],
         {
@@ -485,6 +521,7 @@ export class SourceCommands {
         || sourceType.value === 'local-awesome-copilot'
         || sourceType.value === 'local-apm'
         || sourceType.value === 'local-skills'
+        || sourceType.value === 'local-agent-plugins'
         || sourceType.value === 'azure-devops';
 
       if (!isTokenSkipped) {

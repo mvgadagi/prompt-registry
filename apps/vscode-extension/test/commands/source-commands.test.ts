@@ -5,6 +5,16 @@
 import * as assert from 'node:assert';
 import * as sinon from 'sinon';
 import * as vscode from 'vscode';
+import {
+  SourceCommands,
+} from '../../src/commands/source-commands';
+import {
+  RegistryManager,
+} from '../../src/services/registry-manager';
+import {
+  RegistrySource,
+  ValidationResult,
+} from '../../src/types/registry';
 
 suite('Source Management Commands', () => {
   let sandbox: sinon.SinonSandbox;
@@ -338,5 +348,167 @@ suite('Source Management Commands', () => {
       assert.strictEqual(fulfilled.length, 2);
       assert.strictEqual(rejected.length, 1);
     });
+  });
+});
+
+/**
+ * U5 consume-picker: the add-source flow offers `agent-plugins` /
+ * `local-agent-plugins` and persists a RegistrySource with the correct
+ * additive type. `agent-plugins` reuses the existing public/private + token
+ * prompts (like `skills`); `local-agent-plugins` joins the token-skip list
+ * (like `local-skills`) so it never prompts for a token. Registration only:
+ * the flow validates + persists, it never fetches/installs plugin content.
+ */
+suite('SourceCommands.addSource - agent-plugins source types (U5)', () => {
+  let sandbox: sinon.SinonSandbox;
+  let added: RegistrySource[];
+  let commands: SourceCommands;
+
+  // Minimal RegistryManager stand-in: registration-only surface used by
+  // addSource (validate reachability + persist). No content fetch/install.
+  const makeManager = (validation: ValidationResult): RegistryManager => ({
+    validateSource: async (_source: RegistrySource): Promise<ValidationResult> => validation,
+    addSource: async (source: RegistrySource): Promise<void> => {
+      added.push(source);
+    }
+  } as unknown as RegistryManager);
+
+  /**
+   * Drive the sequential prompts by inspecting each prompt's text so the test
+   * is order-independent and mirrors real user input.
+   * @param answers Per-prompt answers keyed by intent.
+   * @param answers.sourceType The source-type QuickPick selection.
+   * @param answers.name The source name.
+   * @param answers.url The GitHub URL entered for remote types.
+   * @param answers.localPath The folder path returned by the open dialog.
+   * @param answers.isPrivate The public/private QuickPick selection.
+   * @param answers.token The access token entered for a private source.
+   */
+  const wirePrompts = (answers: {
+    sourceType: string;
+    name: string;
+    url?: string;
+    localPath?: string;
+    isPrivate?: boolean;
+    token?: string;
+  }): { tokenPrompted: () => boolean; privatePrompted: () => boolean } => {
+    let tokenPrompted = false;
+    let privatePrompted = false;
+
+    sandbox.stub(vscode.window, 'showQuickPick').callsFake((_items: any, options?: any) => {
+      if (options?.placeHolder === 'Select source type') {
+        return Promise.resolve({ value: answers.sourceType } as any);
+      }
+      if (options?.placeHolder === 'Is this source private?') {
+        privatePrompted = true;
+        return Promise.resolve({ value: answers.isPrivate ?? false } as any);
+      }
+      return Promise.resolve(undefined as any);
+    });
+
+    sandbox.stub(vscode.window, 'showInputBox').callsFake((options?: any) => {
+      const prompt: string = options?.prompt ?? '';
+      if (prompt === 'Enter source name') {
+        return Promise.resolve(answers.name);
+      }
+      if (prompt.startsWith('Enter GitHub repository URL')) {
+        return Promise.resolve(answers.url);
+      }
+      if (prompt.startsWith('Enter access token')) {
+        tokenPrompted = true;
+        return Promise.resolve(answers.token);
+      }
+      if (prompt.startsWith('Enter priority')) {
+        return Promise.resolve('10');
+      }
+      return Promise.resolve(undefined);
+    });
+
+    sandbox.stub(vscode.window, 'showOpenDialog').resolves(
+      answers.localPath ? [{ fsPath: answers.localPath } as vscode.Uri] : undefined
+    );
+
+    return { tokenPrompted: () => tokenPrompted, privatePrompted: () => privatePrompted };
+  };
+
+  setup(() => {
+    sandbox = sinon.createSandbox();
+    added = [];
+    sandbox.stub(vscode.window, 'showInformationMessage').resolves(undefined);
+    sandbox.stub(vscode.window, 'showErrorMessage').resolves(undefined);
+    commands = new SourceCommands(makeManager({ valid: true, errors: [], warnings: [] }));
+  });
+
+  teardown(() => {
+    sandbox.restore();
+  });
+
+  test('offers agent-plugins as a remote type and persists type "agent-plugins" with the token flow', async () => {
+    const probes = wirePrompts({
+      sourceType: 'agent-plugins',
+      name: 'Agent Plugins Source',
+      url: 'https://github.com/owner/repo',
+      isPrivate: true,
+      token: 'secret-token'
+    });
+
+    await commands.addSource();
+
+    assert.strictEqual(added.length, 1, 'exactly one source persisted');
+    assert.strictEqual(added[0].type, 'agent-plugins');
+    assert.strictEqual(added[0].url, 'https://github.com/owner/repo');
+    // agent-plugins is NOT on the token-skip list → public/private + token prompts fire.
+    assert.strictEqual(probes.privatePrompted(), true, 'public/private prompt shown');
+    assert.strictEqual(probes.tokenPrompted(), true, 'token prompt shown for private agent-plugins');
+    assert.strictEqual(added[0].token, 'secret-token');
+    assert.strictEqual(added[0].private, true);
+  });
+
+  test('persists type "local-agent-plugins" and skips the token prompt (parity with local-skills)', async () => {
+    const probes = wirePrompts({
+      sourceType: 'local-agent-plugins',
+      name: 'Local Agent Plugins',
+      localPath: '/tmp/agent-plugins'
+    });
+
+    await commands.addSource();
+
+    assert.strictEqual(added.length, 1, 'exactly one source persisted');
+    assert.strictEqual(added[0].type, 'local-agent-plugins');
+    assert.strictEqual(added[0].url, '/tmp/agent-plugins');
+    // local-agent-plugins IS on the token-skip list → no consent/token prompts.
+    assert.strictEqual(probes.privatePrompted(), false, 'no public/private prompt for local type');
+    assert.strictEqual(probes.tokenPrompted(), false, 'no token prompt for local-agent-plugins');
+    assert.strictEqual(added[0].token, undefined);
+    assert.strictEqual(added[0].private, false);
+  });
+
+  test('a public agent-plugins source persists with no token (no weakened consent)', async () => {
+    const probes = wirePrompts({
+      sourceType: 'agent-plugins',
+      name: 'Public Agent Plugins',
+      url: 'https://github.com/owner/public-repo',
+      isPrivate: false
+    });
+
+    await commands.addSource();
+
+    assert.strictEqual(added.length, 1);
+    assert.strictEqual(added[0].type, 'agent-plugins');
+    // Public/private prompt still shown (unchanged consent); token skipped because public.
+    assert.strictEqual(probes.privatePrompted(), true, 'public/private prompt still shown');
+    assert.strictEqual(probes.tokenPrompted(), false, 'no token prompt for a public source');
+    assert.strictEqual(added[0].token, undefined);
+    assert.strictEqual(added[0].private, false);
+  });
+
+  test('does not persist when the source type is cancelled (registration-only, no side effects)', async () => {
+    sandbox.stub(vscode.window, 'showQuickPick').resolves(undefined);
+    sandbox.stub(vscode.window, 'showInputBox').resolves(undefined);
+    sandbox.stub(vscode.window, 'showOpenDialog').resolves(undefined);
+
+    await commands.addSource();
+
+    assert.strictEqual(added.length, 0, 'nothing persisted when the picker is dismissed');
   });
 });
